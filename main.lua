@@ -1,7 +1,10 @@
 --[[ Rudra's Ragebot — Gun + Melee + Throwable (+ Custom passthrough)
-     Tabs: Rage | Weapon | Spoofer | Config
-     Config tab: save/load/overwrite/delete/autoload via JSON files
-     Configs stored in RudrasRagebot/<name>.json (executor filesystem)
+     Tabs: Rage | Weapon | Spoofer
+     Rage supports Gun / Melee / Throwable
+     Weapon tab has Auto Load dropdown with search
+     Spoofer tab has Device Spoofer toggle + dropdown (VR/Console/Mobile/PC)
+     Bubble opens with "R", close animates to bubble
+     Palette: black / gold / purple
 ]]
 
 local Players           = game:GetService("Players")
@@ -10,71 +13,8 @@ local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui           = game:GetService("CoreGui")
 local UserInputService  = game:GetService("UserInputService")
-local HttpService       = game:GetService("HttpService")
 
 local LP = Players.LocalPlayer
-
--- ── Filesystem (executor) ──────────────────────────────────────────────────
-local HAS_FS = (type(writefile) == "function"
-             and type(readfile) == "function"
-             and type(isfile) == "function")
-local HAS_FOLDER = (type(makefolder) == "function" and type(isfolder) == "function")
-local HAS_LIST   = (type(listfiles) == "function")
-local HAS_DEL    = (type(delfile) == "function")
-
-local CONFIG_DIR = "RudrasRagebot"
-local AUTOLOAD_FILE = CONFIG_DIR .. "/_autoload.txt"
-
-local function ensureConfigDir()
-    if HAS_FOLDER and not isfolder(CONFIG_DIR) then
-        pcall(makefolder, CONFIG_DIR)
-    end
-end
-
-local function configPath(name)
-    return CONFIG_DIR .. "/" .. name .. ".json"
-end
-
-local function listConfigNames()
-    local out = {}
-    if HAS_FS and HAS_LIST then
-        ensureConfigDir()
-        local ok, files = pcall(listfiles, CONFIG_DIR)
-        if ok and type(files) == "table" then
-            for _, path in ipairs(files) do
-                local fname = path:match("([^/\\]+)%.json$")
-                if fname then table.insert(out, fname) end
-            end
-        end
-    end
-    table.sort(out)
-    return out
-end
-
-local function writeJson(path, data)
-    if not HAS_FS then return false end
-    local ok, json = pcall(HttpService.JSONEncode, HttpService, data)
-    if not ok then return false end
-    return pcall(writefile, path, json)
-end
-
-local function readJson(path)
-    if not HAS_FS then return nil end
-    if not isfile(path) then return nil end
-    local ok, raw = pcall(readfile, path)
-    if not ok or not raw or raw == "" then return nil end
-    local ok2, data = pcall(HttpService.JSONDecode, HttpService, raw)
-    if not ok2 then return nil end
-    return data
-end
-
-local function deleteFile(path)
-    if not HAS_DEL then return false end
-    if isfile(path) then
-        return pcall(delfile, path)
-    end
-    return false
-end
 
 -- ── Palette ────────────────────────────────────────────────────────────────
 local C_BLACK      = Color3.fromRGB(14, 12, 18)
@@ -91,7 +31,9 @@ local C_RED        = Color3.fromRGB(200, 50, 60)
 local FONT   = Enum.Font.GothamMedium
 local FONT_B = Enum.Font.GothamBold
 
--- ── Fighter / weapon helpers ───────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Resolve local fighter
+-- ────────────────────────────────────────────────────────────────────────────
 local LocalFighter
 do
     local ps   = LP:FindFirstChild("PlayerScripts")
@@ -146,7 +88,9 @@ do
     end
 end
 
--- ── Weapon library ─────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Weapon library
+-- ────────────────────────────────────────────────────────────────────────────
 local ALL_WEAPON_NAMES = {}
 do
     local found = false
@@ -194,15 +138,19 @@ local function getSelectedArray()
     return arr
 end
 
--- ── Device spoofer state ───────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Device spoofer state
+-- ────────────────────────────────────────────────────────────────────────────
 local DeviceSpooferEnabled = false
+-- The game accepts: "VR", "Touch", "Gamepad", "MouseKeyboard"
+-- UI labels:        VR,   Mobile,   Console,     PC
 local DEVICE_OPTIONS = {
     { label = "VR",      arg = "VR"            },
     { label = "Console", arg = "Gamepad"       },
     { label = "Mobile",  arg = "Touch"         },
     { label = "PC",      arg = "MouseKeyboard" },
 }
-local SelectedDevice = nil
+local SelectedDevice = nil   -- stores the {label, arg} table
 
 local function fireSetControls(arg)
     if not SetControlsRemote or not arg then return false end
@@ -215,7 +163,9 @@ local function applyDeviceSpoofer()
     end
 end
 
--- ── Rage state ─────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Rage state
+-- ────────────────────────────────────────────────────────────────────────────
 local RageEnabled   = false
 local CurrentTarget = nil
 local ShootConn     = nil
@@ -244,7 +194,9 @@ local function resetReloadState()
     ReloadState.awaiting_full = false
 end
 
--- ── Targeting ──────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Targeting
+-- ────────────────────────────────────────────────────────────────────────────
 local function getLocalRoot()
     local ch = LP.Character
     return ch and ch:FindFirstChild("HumanoidRootPart")
@@ -298,7 +250,9 @@ local function getNearestHumanoid()
     return best
 end
 
--- ── Camera ─────────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Camera
+-- ────────────────────────────────────────────────────────────────────────────
 local function applyCameraMode()
     local cam = workspace.CurrentCamera
     if not cam then return end
@@ -351,7 +305,9 @@ local function stopAimLoop()
     restoreCameraMode()
 end
 
--- ── Loop TP ────────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Loop TP
+-- ────────────────────────────────────────────────────────────────────────────
 local function startLoopTP(targetRoot)
     if TPConn then TPConn:Disconnect() end
     TPConn = RunService.Heartbeat:Connect(function()
@@ -367,7 +323,9 @@ local function stopLoopTP()
     if TPConn then TPConn:Disconnect(); TPConn = nil end
 end
 
--- ── Fire ───────────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Fire
+-- ────────────────────────────────────────────────────────────────────────────
 local function fireOnce(weapon)
     if not weapon then
         if UseItemRemote and LocalFighter and LocalFighter.EquippedItem then
@@ -388,7 +346,9 @@ local function fireOnce(weapon)
     end
 end
 
--- ── Reload handling ────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Reload handling
+-- ────────────────────────────────────────────────────────────────────────────
 local function handleReload(weapon)
     if not (weapon.Info and weapon.Info.ReloadType) then return end
     if isThrowable(weapon) then return end
@@ -447,7 +407,9 @@ local function handleReload(weapon)
     end
 end
 
--- ── Rage loop ──────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Rage loop
+-- ────────────────────────────────────────────────────────────────────────────
 local function startRage()
     RageEnabled = true
     startAimLoop()
@@ -524,7 +486,9 @@ local function stopRage()
     stopAimLoop()
 end
 
--- ── GUI helpers ────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- GUI helpers
+-- ────────────────────────────────────────────────────────────────────────────
 local function corner(parent, r)
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, r or 8)
@@ -552,7 +516,9 @@ local function gradient(parent, c1, c2, rot)
     return g
 end
 
--- ── Root gui ───────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Root gui
+-- ────────────────────────────────────────────────────────────────────────────
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name           = "RageGui"
 ScreenGui.ResetOnSpawn   = false
@@ -732,7 +698,6 @@ end
 local RagePage    = makePage("Rage")
 local WeaponPage  = makePage("Weapon")
 local SpooferPage = makePage("Spoofer")
-local ConfigPage  = makePage("Config")
 
 local function sectionHeader(parent, text, order)
     local row = Instance.new("Frame")
@@ -1432,408 +1397,11 @@ end)
 
 buildDevList()
 
--- ════════════════════════════════════════════════════════════════════════════
--- CONFIG PAGE
--- ════════════════════════════════════════════════════════════════════════════
-sectionHeader(ConfigPage, "SAVE CONFIG", 1)
-
-local SaveCard = card(ConfigPage, 2, 44)
-local SaveBox = Instance.new("TextBox")
-SaveBox.Name             = "ConfigNameBox"
-SaveBox.Size             = UDim2.new(1, -110, 0, 30)
-SaveBox.Position         = UDim2.new(0, 10, 0.5, -15)
-SaveBox.BackgroundColor3 = C_BLACK
-SaveBox.BorderSizePixel  = 0
-SaveBox.Text             = ""
-SaveBox.PlaceholderText  = "config name…"
-SaveBox.TextColor3       = C_TEXT
-SaveBox.PlaceholderColor3= C_TEXT_DIM
-SaveBox.Font             = FONT
-SaveBox.TextSize         = 13
-SaveBox.ClearTextOnFocus = false
-SaveBox.Parent           = SaveCard
-corner(SaveBox, 6)
-stroke(SaveBox, C_GOLD_DARK, 1, 0.3)
-
-local SaveBtn = Instance.new("TextButton")
-SaveBtn.Name             = "SaveBtn"
-SaveBtn.Size             = UDim2.new(0, 90, 0, 30)
-SaveBtn.Position         = UDim2.new(1, -100, 0.5, -15)
-SaveBtn.BackgroundColor3 = C_GOLD_DARK
-SaveBtn.BorderSizePixel  = 0
-SaveBtn.Text             = "Save"
-SaveBtn.TextColor3       = C_BLACK
-SaveBtn.Font             = FONT_B
-SaveBtn.TextSize         = 12
-SaveBtn.Parent           = SaveCard
-corner(SaveBtn, 6)
-
-sectionHeader(ConfigPage, "CONFIGS", 3)
-
-local LoadHeader = card(ConfigPage, 4, 36)
-local LoadBtn = Instance.new("TextButton")
-LoadBtn.Name             = "LoadToggle"
-LoadBtn.Size             = UDim2.fromScale(1, 1)
-LoadBtn.BackgroundTransparency = 1
-LoadBtn.Text             = ""
-LoadBtn.Parent           = LoadHeader
-
-local LoadLbl = Instance.new("TextLabel")
-LoadLbl.Size                   = UDim2.new(1, -70, 1, 0)
-LoadLbl.Position               = UDim2.new(0, 14, 0, 0)
-LoadLbl.BackgroundTransparency = 1
-LoadLbl.Text                   = "▼ Configs"
-LoadLbl.TextColor3             = C_TEXT
-LoadLbl.Font                   = FONT
-LoadLbl.TextSize               = 13
-LoadLbl.TextXAlignment         = Enum.TextXAlignment.Left
-LoadLbl.Parent                 = LoadHeader
-
-local LoadChevron = Instance.new("TextLabel")
-LoadChevron.Size                   = UDim2.new(0, 24, 1, 0)
-LoadChevron.Position               = UDim2.new(1, -32, 0, 0)
-LoadChevron.BackgroundTransparency = 1
-LoadChevron.Text                   = "▼"
-LoadChevron.TextColor3             = C_GOLD
-LoadChevron.Font                   = FONT_B
-LoadChevron.TextSize               = 12
-LoadChevron.Parent                 = LoadHeader
-
-local ConfigList = Instance.new("ScrollingFrame")
-ConfigList.Name             = "ConfigList"
-ConfigList.Size             = UDim2.new(1, 0, 0, 0)
-ConfigList.BackgroundColor3 = C_BLACK_2
-ConfigList.BorderSizePixel  = 0
-ConfigList.ScrollBarThickness = 3
-ConfigList.CanvasSize       = UDim2.new(0, 0, 0, 0)
-ConfigList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-ConfigList.Visible          = false
-ConfigList.LayoutOrder      = 5
-ConfigList.ClipsDescendants = true
-ConfigList.Parent           = ConfigPage
-corner(ConfigList, 8)
-stroke(ConfigList, C_PURPLE_DIM, 1, 0.3)
-
-local ConfigListLayout = Instance.new("UIListLayout")
-ConfigListLayout.Padding   = UDim.new(0, 4)
-ConfigListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-ConfigListLayout.Parent    = ConfigList
-
-local ConfigListPad = Instance.new("UIPadding")
-ConfigListPad.PaddingTop    = UDim.new(0, 6)
-ConfigListPad.PaddingBottom = UDim.new(0, 6)
-ConfigListPad.PaddingLeft   = UDim.new(0, 6)
-ConfigListPad.PaddingRight  = UDim.new(0, 6)
-ConfigListPad.Parent        = ConfigList
-
-local AutoLoadConfigLabel = Instance.new("TextLabel")
-AutoLoadConfigLabel.Size                   = UDim2.new(1, 0, 0, 20)
-AutoLoadConfigLabel.BackgroundTransparency = 1
-AutoLoadConfigLabel.LayoutOrder            = 6
-AutoLoadConfigLabel.Text                   = "autoload: none"
-AutoLoadConfigLabel.TextColor3             = C_TEXT_DIM
-AutoLoadConfigLabel.Font                   = FONT
-AutoLoadConfigLabel.TextSize               = 12
-AutoLoadConfigLabel.TextXAlignment         = Enum.TextXAlignment.Left
-AutoLoadConfigLabel.Parent                 = ConfigPage
-
-local StatusConfigLabel = Instance.new("TextLabel")
-StatusConfigLabel.Size                   = UDim2.new(1, 0, 0, 20)
-StatusConfigLabel.BackgroundTransparency = 1
-StatusConfigLabel.LayoutOrder            = 7
-StatusConfigLabel.Text                   = HAS_FS and "fs: ready" or "fs: unavailable (session-only)"
-StatusConfigLabel.TextColor3             = C_TEXT_DIM
-StatusConfigLabel.Font                   = FONT
-StatusConfigLabel.TextSize               = 12
-StatusConfigLabel.TextXAlignment         = Enum.TextXAlignment.Left
-StatusConfigLabel.Parent                 = ConfigPage
-
--- ── Serialize / apply config ───────────────────────────────────────────────
-local function captureConfig()
-    -- excluded names (player names, not objects)
-    local excludedNames = {}
-    for plr, v in pairs(ExcludedPlayers) do
-        if v and plr and plr.Name then
-            table.insert(excludedNames, plr.Name)
-        end
-    end
-    table.sort(excludedNames)
-
-    local selectedArr = getSelectedArray()
-
-    return {
-        version         = 1,
-        rageEnabled     = RageEnabled,
-        bulletsPerBullet = BulletsPerBullet,
-        excludedNames   = excludedNames,
-        autoLoadEnabled = AutoLoadEnabled,
-        selectedWeapons = selectedArr,
-        deviceSpooferEnabled = DeviceSpooferEnabled,
-        selectedDeviceLabel  = SelectedDevice and SelectedDevice.label or nil,
-    }
-end
-
-local function applyConfig(cfg)
-    if type(cfg) ~= "table" then return false end
-
-    -- rage
-    if cfg.rageEnabled == true and not RageEnabled then
-        startRage()
-        setRageButtonState(true)
-        Status.Text = "active"
-    elseif cfg.rageEnabled == false and RageEnabled then
-        stopRage()
-        setRageButtonState(false)
-        Status.Text = "idle"
-    end
-
-    -- bullets
-    if type(cfg.bulletsPerBullet) == "number" then
-        BulletsPerBullet = math.max(0, cfg.bulletsPerBullet)
-        BPCBox.Text = tostring(BulletsPerBullet)
-    end
-
-    -- excluded players (rebuild map from names, only if currently present)
-    if type(cfg.excludedNames) == "table" then
-        ExcludedPlayers = {}
-        local map = {}
-        for _, name in ipairs(cfg.excludedNames) do map[name] = true end
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LP and map[plr.Name] then
-                ExcludedPlayers[plr] = true
-            end
-        end
-        refreshExcludeCount()
-        if ExcludeList.Visible then rebuildPlayerList() end
-    end
-
-    -- weapons
-    if type(cfg.selectedWeapons) == "table" then
-        SelectedWeapons = {}
-        for _, name in ipairs(cfg.selectedWeapons) do
-            if type(name) == "string" then SelectedWeapons[name] = true end
-        end
-        refreshSelectedLabel()
-        rebuildWeaponList(SearchBox.Text)
-    end
-
-    -- auto load
-    if cfg.autoLoadEnabled == true and not AutoLoadEnabled then
-        AutoLoadEnabled = true
-        setAutoButtonState(true)
-        firePickWeapons(getSelectedArray())
-    elseif cfg.autoLoadEnabled == false and AutoLoadEnabled then
-        AutoLoadEnabled = false
-        setAutoButtonState(false)
-    end
-
-    -- device spoofer
-    if cfg.deviceSpooferEnabled == true and not DeviceSpooferEnabled then
-        DeviceSpooferEnabled = true
-        setDeviceButtonState(true)
-    elseif cfg.deviceSpooferEnabled == false and DeviceSpooferEnabled then
-        DeviceSpooferEnabled = false
-        setDeviceButtonState(false)
-    end
-    if type(cfg.selectedDeviceLabel) == "string" then
-        for _, opt in ipairs(DEVICE_OPTIONS) do
-            if opt.label == cfg.selectedDeviceLabel then
-                SelectedDevice = opt
-                refreshDevButtons()
-                break
-            end
-        end
-    end
-    if DeviceSpooferEnabled then applyDeviceSpoofer() end
-
-    return true
-end
-
--- ── Autoload pointer ───────────────────────────────────────────────────────
-local function setAutoloadName(name)
-    if not HAS_FS then return end
-    ensureConfigDir()
-    if name and name ~= "" then
-        pcall(writefile, AUTOLOAD_FILE, name)
-    else
-        if isfile(AUTOLOAD_FILE) then
-            pcall(delfile, AUTOLOAD_FILE)
-        end
-    end
-end
-
-local function getAutoloadName()
-    if not HAS_FS then return nil end
-    if not isfile(AUTOLOAD_FILE) then return nil end
-    local ok, raw = pcall(readfile, AUTOLOAD_FILE)
-    if ok and raw and raw ~= "" then return raw:gsub("%s+$", "") end
-    return nil
-end
-
-local function refreshAutoloadLabel()
-    local name = getAutoloadName()
-    if name then
-        AutoLoadConfigLabel.Text = "autoload: " .. name
-    else
-        AutoLoadConfigLabel.Text = "autoload: none"
-    end
-end
-
--- ── Config list rendering ──────────────────────────────────────────────────
-local function rebuildConfigList()
-    for _, c in ipairs(ConfigList:GetChildren()) do
-        if c:IsA("Frame") or c:IsA("TextButton") then c:Destroy() end
-    end
-
-    local names = listConfigNames()
-    local order = 0
-    if #names == 0 then
-        local empty = Instance.new("TextLabel")
-        empty.Size                   = UDim2.new(1, 0, 0, 24)
-        empty.BackgroundTransparency = 1
-        empty.Text                   = "no saved configs"
-        empty.TextColor3             = C_TEXT_DIM
-        empty.Font                   = FONT
-        empty.TextSize               = 12
-        empty.TextXAlignment         = Enum.TextXAlignment.Left
-        empty.Parent                 = ConfigList
-        ConfigList.Size = UDim2.new(1, 0, 0, 40)
-        return
-    end
-
-    local autoloadName = getAutoloadName()
-
-    for _, name in ipairs(names) do
-        order += 1
-        local row = Instance.new("Frame")
-        row.Name             = "Cfg_" .. name
-        row.Size             = UDim2.new(1, 0, 0, 32)
-        row.BackgroundColor3 = C_BLACK_3
-        row.BorderSizePixel  = 0
-        row.LayoutOrder      = order
-        row.Parent           = ConfigList
-        corner(row, 6)
-
-        local nameLbl = Instance.new("TextLabel")
-        nameLbl.Size                   = UDim2.new(1, -230, 1, 0)
-        nameLbl.Position               = UDim2.new(0, 10, 0, 0)
-        nameLbl.BackgroundTransparency = 1
-        nameLbl.Text                   = name .. (autoloadName == name and "  (auto)" or "")
-        nameLbl.TextColor3             = (autoloadName == name) and C_GOLD or C_TEXT
-        nameLbl.Font                   = FONT
-        nameLbl.TextSize               = 12
-        nameLbl.TextXAlignment         = Enum.TextXAlignment.Left
-        nameLbl.Parent                 = row
-
-        local function miniBtn(label, xOffset, color, cb)
-            local b = Instance.new("TextButton")
-            b.Size             = UDim2.new(0, 50, 0, 24)
-            b.Position         = UDim2.new(1, xOffset, 0.5, -12)
-            b.BackgroundColor3 = color
-            b.BorderSizePixel  = 0
-            b.Text             = label
-            b.TextColor3       = C_BLACK
-            b.Font             = FONT_B
-            b.TextSize         = 11
-            b.Parent           = row
-            corner(b, 4)
-            b.MouseButton1Click:Connect(cb)
-            return b
-        end
-
-        miniBtn("Load", -220, C_GOLD_DARK, function()
-            local data = readJson(configPath(name))
-            if data then
-                applyConfig(data)
-                StatusConfigLabel.Text = "loaded: " .. name
-            else
-                StatusConfigLabel.Text = "failed to load: " .. name
-            end
-        end)
-
-        miniBtn("Over", -166, C_PURPLE, function()
-            local data = captureConfig()
-            if writeJson(configPath(name), data) then
-                StatusConfigLabel.Text = "overwrote: " .. name
-                rebuildConfigList()
-            else
-                StatusConfigLabel.Text = "failed to save: " .. name
-            end
-        end)
-
-        miniBtn("Auto", -112, C_PURPLE_DIM, function()
-            setAutoloadName(name)
-            refreshAutoloadLabel()
-            rebuildConfigList()
-        end)
-
-        miniBtn("Del", -58, C_RED, function()
-            if deleteFile(configPath(name)) then
-                if getAutoloadName() == name then setAutoloadName(nil); refreshAutoloadLabel() end
-                rebuildConfigList()
-                StatusConfigLabel.Text = "deleted: " .. name
-            else
-                StatusConfigLabel.Text = "failed to delete: " .. name
-            end
-        end)
-    end
-
-    local targetH = math.min(#names, 4) * 36 + 12
-    TweenService:Create(ConfigList, TweenInfo.new(0.2, Enum.EasingStyle.Quad),
-        {Size = UDim2.new(1, 0, 0, targetH)}):Play()
-end
-
-LoadBtn.MouseButton1Click:Connect(function()
-    ConfigList.Visible = not ConfigList.Visible
-    LoadChevron.Text = ConfigList.Visible and "▲" or "▼"
-    if ConfigList.Visible then
-        rebuildConfigList()
-    else
-        TweenService:Create(ConfigList, TweenInfo.new(0.2), {Size = UDim2.new(1, 0, 0, 0)}):Play()
-    end
-end)
-
-SaveBtn.MouseButton1Click:Connect(function()
-    local name = (SaveBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    if name == "" then
-        StatusConfigLabel.Text = "enter a config name"
-        return
-    end
-    if name:find("[/\\]") then
-        StatusConfigLabel.Text = "invalid name"
-        return
-    end
-    local data = captureConfig()
-    if writeJson(configPath(name), data) then
-        StatusConfigLabel.Text = "saved: " .. name
-        if ConfigList.Visible then rebuildConfigList() end
-    else
-        StatusConfigLabel.Text = "failed to save (no filesystem?)"
-    end
-end)
-
-refreshAutoloadLabel()
-if ConfigList.Visible then rebuildConfigList() end
-
--- ── Config autoload on exec ────────────────────────────────────────────────
-task.spawn(function()
-    if not HAS_FS then return end
-    local name = getAutoloadName()
-    if not name then return end
-    local data = readJson(configPath(name))
-    if data then
-        task.wait(1)  -- let LocalFighter resolve + spawn
-        applyConfig(data)
-        StatusConfigLabel.Text = "autoloaded: " .. name
-    end
-end)
-
--- ── Tabs ───────────────────────────────────────────────────────────────────
+-- ── Tabs ────────────────────────────────────────────────────────────────────
 local Tabs = {
     { name = "Rage",    page = RagePage    },
     { name = "Weapon",  page = WeaponPage  },
     { name = "Spoofer", page = SpooferPage },
-    { name = "Config",  page = ConfigPage  },
 }
 
 local tabButtons = {}
@@ -1903,7 +1471,9 @@ end
 
 selectTab("Rage")
 
--- ── Open bubble ────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Open bubble
+-- ────────────────────────────────────────────────────────────────────────────
 local OpenBubble = Instance.new("TextButton")
 OpenBubble.Name             = "OpenBubble"
 OpenBubble.Size             = UDim2.new(0, 52, 0, 52)
@@ -1987,7 +1557,9 @@ end
 CloseBtn.MouseButton1Click:Connect(animateClose)
 OpenBubble.MouseButton1Click:Connect(animateOpen)
 
--- ── Live status ────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- Live status
+-- ────────────────────────────────────────────────────────────────────────────
 RunService.Heartbeat:Connect(function()
     if not RageEnabled then return end
 
