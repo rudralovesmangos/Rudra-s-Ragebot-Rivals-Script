@@ -7,12 +7,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LP = Players.LocalPlayer
 
+-- fire tuning
 local FIRE_INTERVAL = 0.01
 local BULLETS_PER_FRAME = 2
 local FORCEFIELD_WAIT = 0.1
-local EQUIP_WAIT_TIMEOUT = 3
-local RELOAD_WAIT_TIMEOUT = 8
-local POLL_INTERVAL = 0.1
+local RELOAD_WAIT_TIMEOUT = 5
+local EQUIP_WAIT_TIMEOUT = 1
 
 local function getGuiParent()
  local ok, hui = pcall(function() return gethui and gethui() end)
@@ -252,9 +252,15 @@ local ffCache = {}
 local function bindFFCache(character)
  if ffCache[character] ~= nil then return end
  ffCache[character] = { dirty = true, value = false }
- character.DescendantAdded:Connect(function() ffCache[character].dirty = true end)
- character.DescendantRemoving:Connect(function() ffCache[character].dirty = true end)
- character.AncestryChanged:Connect(function() ffCache[character] = nil end)
+ character.DescendantAdded:Connect(function()
+  ffCache[character].dirty = true
+ end)
+ character.DescendantRemoving:Connect(function()
+  ffCache[character].dirty = true
+ end)
+ character.AncestryChanged:Connect(function()
+  ffCache[character] = nil
+ end)
 end
 
 local function scanCharacterForFF(character)
@@ -313,11 +319,13 @@ local function subscribeInvincibility(fighter, onChange)
  invConnections[fighter] = invConnections[fighter] or {}
  local ok, sig = pcall(function() return fighter:GetDataChangedSignal("Invincibility") end)
  if ok and sig then
-  table.insert(invConnections[fighter], sig:Connect(function() onChange() end))
+  local c = sig:Connect(function() onChange() end)
+  table.insert(invConnections[fighter], c)
  end
  local ok2, sig2 = pcall(function() return fighter.InvincibilityChanged end)
  if ok2 and sig2 and sig2.Connect then
-  table.insert(invConnections[fighter], sig2:Connect(function() onChange() end))
+  local c2 = sig2:Connect(function() onChange() end)
+  table.insert(invConnections[fighter], c2)
  end
 end
 
@@ -444,12 +452,14 @@ local function getLocalFighter()
  return getFighter(LP)
 end
 
--- only shoot gates; leaves reload state alone
-local function resetShootGates(fighter)
+local function resetWeaponGates(fighter)
  local it = fighter and fighter.EquippedItem
  if not it then return end
  it._shoot_cooldown = 0
  it._shoot_cooldown_no_ammo = 0
+ it._reload_cooldown = 0
+ it._reload_cancel_cooldown = 0
+ it._reload_cancel_expiration = 0
  it._last_shot = 0
  it._burst_count = 0
  it._is_revolver_quick_shooting = nil
@@ -458,58 +468,156 @@ local function resetShootGates(fighter)
  if it.Data then it.Data.QuickAttackQueued = false end
 end
 
-local function ammoOf(it)
- local a = tonumber(it:Get("Ammo"))
- if a == nil then return math.huge end
- return a
+-- ammo query: strictly true only when the client actually reports ammo > 0 (or infinite)
+-- nil / unknown ammo => NOT counted as having ammo, to avoid phantom "loaded" reads
+local function getAmmoInfo(item)
+ if not item then return { ammo = 0, reserve = 0, infinite = false, infiniteReserve = false } end
+ local okA, ammo = pcall(function() return item:Get("Ammo") end)
+ local okR, reserve = pcall(function() return item:Get("AmmoReserve") end)
+ local okInf, inf = pcall(function() return item:Get("InfiniteAmmo") end)
+ local okInfR, infR = pcall(function() return item:Get("InfiniteAmmoReserve") end)
+ ammo = okA and ammo or nil
+ reserve = okR and reserve or nil
+ if ammo == math.huge then
+  return { ammo = math.huge, reserve = reserve or 0, infinite = true, infiniteReserve = okInfR and infR or false }
+ end
+ return {
+  ammo = tonumber(ammo) or 0,
+  reserve = tonumber(reserve) or 0,
+  infinite = okInf and inf or false,
+  infiniteReserve = okInfR and infR or false,
+ }
 end
 
-local function reserveOf(it)
- local r = tonumber(it:Get("AmmoReserve"))
- if r == nil then return math.huge end
- return r
+local function itemHasAmmo(item)
+ local info = getAmmoInfo(item)
+ if info.infinite then return true end
+ return info.ammo > 0
 end
 
-local function isGun(it)
- return it ~= nil and type(it.StartReloading) == "function"
+local function isWeaponItem(item)
+ if not item then return false end
+ if type(item.StartShooting) ~= "function" then return false end
+ return item.Info ~= nil
 end
 
-local function listGuns(fighter)
- local guns = {}
- for i, it in ipairs(fighter.Items) do
-  if isGun(it) then
-   table.insert(guns, { index = i, item = it })
+local function itemKey(item)
+ if not item then return nil end
+ local ok, id = pcall(function() return item:Get("ObjectID") end)
+ if ok and id ~= nil then return id end
+ return item
+end
+
+local function indexOfItem(fighter, item)
+ if not fighter or not item then return nil end
+ for i, v in ipairs(fighter.Items) do
+  if v == item then return i end
+ end
+ return nil
+end
+
+-- find next weapon (excluding current) that has live ammo and isn't marked empty
+local function findNextWeaponWithAmmo(fighter, currentIndex, emptySet)
+ if not fighter then return nil end
+ local n = #fighter.Items
+ if n == 0 then return nil end
+ for step = 1, n do
+  local idx = ((currentIndex - 1 + step) % n) + 1
+  local it = fighter.Items[idx]
+  if idx ~= currentIndex and isWeaponItem(it) then
+   local key = itemKey(it)
+   local live = itemHasAmmo(it)
+   -- if live ammo > 0, clear stale empty marker
+   if live and emptySet and key then
+    emptySet[key] = nil
+   end
+   if live and not (emptySet and emptySet[key]) then
+    return idx
+   end
   end
  end
- return guns
-end
-
-local function indexOfGun(guns, item)
- for _, g in ipairs(guns) do
-  if g.item == item then return g.index end
- end
  return nil
 end
 
-local function findNextFiringGun(fighter, currentItem)
- local guns = listGuns(fighter)
- if #guns == 0 then return nil end
- local currentIndex = indexOfGun(guns, currentItem) or 0
- local startPos = 1
- for i, g in ipairs(guns) do
-  if g.index == currentIndex then startPos = i % #guns + 1 break end
+local function equipAndWait(fighter, idx, timeout)
+ if not fighter or not idx then return false end
+ local targetItem = fighter.Items[idx]
+ if not targetItem then return false end
+ if fighter.EquippedItem ~= targetItem then
+  pcall(function() fighter:EquipItem(idx, true) end)
  end
- for off = 0, #guns - 1 do
-  local g = guns[(startPos - 1 + off) % #guns + 1]
-  if ammoOf(g.item) > 0 then return g end
+ timeout = timeout or EQUIP_WAIT_TIMEOUT
+ local t0 = tick()
+ while tick() - t0 < timeout do
+  if fighter.EquippedItem == targetItem then return true end
+  task.wait(0.01)
  end
- return nil
+ return fighter.EquippedItem == targetItem
 end
 
--- gun is "reloading" if its own _reload_cooldown field is in the future
-local function isReloadingByGun(it)
- local rc = it._reload_cooldown
- return type(rc) == "number" and rc > tick()
+local function reloadEquipped(fighter, timeout)
+ if not fighter then return false end
+ local it = fighter.EquippedItem
+ if not it then return false end
+ resetWeaponGates(fighter)
+ it._reload_cooldown = 0
+ it._reload_cancel_cooldown = 0
+ it._reload_cancel_expiration = 0
+ pcall(function() fighter:Input("StartReloading") end)
+ timeout = timeout or RELOAD_WAIT_TIMEOUT
+ local t0 = tick()
+ while tick() - t0 < timeout do
+  if not State.Rage then return false end
+  local info = getAmmoInfo(it)
+  if info.infinite or info.ammo > 0 then
+   return true
+  end
+  if info.reserve <= 0 and not info.infiniteReserve then
+   return false
+  end
+  task.wait(0.02)
+ end
+ return false
+end
+
+-- persistent per-engagement ammo state
+-- emptyWeapons: map itemKey -> true once we've seen that weapon go empty
+-- keeps us from switching back to a still-empty weapon in a loop
+local function handleAmmo(fighter, emptyWeapons)
+ if not fighter then return false end
+ local equipped = fighter.EquippedItem
+ if not equipped then return false end
+ if not isWeaponItem(equipped) then return false end
+
+ -- if equipped has ammo, it's fine to shoot
+ if itemHasAmmo(equipped) then
+  local key = itemKey(equipped)
+  if key and emptyWeapons then emptyWeapons[key] = nil end
+  return false
+ end
+
+ -- equipped is empty: record it
+ local equippedKey = itemKey(equipped)
+ if equippedKey then emptyWeapons[equippedKey] = true end
+
+ local curIdx = indexOfItem(fighter, equipped)
+ if not curIdx then return false end
+
+ -- try to switch to any *other* weapon that actually has live ammo (and isn't marked empty)
+ local nextIdx = findNextWeaponWithAmmo(fighter, curIdx, emptyWeapons)
+ if nextIdx then
+  setStatus("switching weapon", Color3.fromRGB(255, 210, 90))
+  equipAndWait(fighter, nextIdx, EQUIP_WAIT_TIMEOUT)
+  return true
+ end
+
+ -- nothing else has ammo -> we're on the only remaining empty weapon, reload it
+ setStatus("reloading", Color3.fromRGB(140, 200, 255))
+ local ok = reloadEquipped(fighter)
+ if ok and equippedKey then
+  emptyWeapons[equippedKey] = nil
+ end
+ return true
 end
 
 local function engage(target)
@@ -541,207 +649,69 @@ local function engage(target)
  local offsetVec = Vector3.new(0, 2.5, 0)
  local nextFire = 0
 
- local cycle = {
-  phase = "fire",
-  switchTargetItem = nil,
-  reloadGuns = nil,
-  reloadPos = 1,
-  reloadDone = {},
-  reloadWaitStart = {},
- }
+ -- per-engagement ammo cycle state
+ local emptyWeapons = {}
 
  while State.Rage and State.Target == target do
   if not targetHum or targetHum.Health <= 0 or not targetModel or not targetModel.Parent or not head or not head.Parent then
    break
   end
 
-  local protected = isProtected(targetPlayer, targetModel, targetFighter)
-  root.CFrame = CFrame.new(head.Position + offsetVec)
-  faceAt(head.Position, cam)
+  local now = tick()
 
-  if protected then
+  if isProtected(targetPlayer, targetModel, targetFighter) then
    if not protectionDirty then
     setStatus("forcefield — waiting", Color3.fromRGB(255, 210, 90))
    end
+   root.CFrame = CFrame.new(head.Position + offsetVec)
+   faceAt(head.Position, cam)
    protectionDirty = false
-   cycle.phase = "fire"
-   cycle.switchTargetItem = nil
-   cycle.reloadGuns = nil
    task.wait(FORCEFIELD_WAIT)
    continue
   end
 
-  if not shooterFighter then
-   task.wait(0.1)
+  -- handle empty weapon before firing
+  if shooterFighter then
+   local handled = handleAmmo(shooterFighter, emptyWeapons)
+   if handled then
+    root.CFrame = CFrame.new(head.Position + offsetVec)
+    faceAt(head.Position, cam)
+    if not State.Rage then break end
+    task.wait(0.01)
+    continue
+   end
+  end
+
+  if now < nextFire then
+   root.CFrame = CFrame.new(head.Position + offsetVec)
+   faceAt(head.Position, cam)
+   RunService.PreRender:Wait()
    continue
   end
 
-  if cycle.phase == "fire" then
-   local equipped = shooterFighter.EquippedItem
-   if not equipped then
-    local nextGun = findNextFiringGun(shooterFighter, nil)
-    if nextGun then
-     shooterFighter:EquipItem(nextGun.index)
-     cycle.phase = "switch-wait"
-     cycle.switchTargetItem = nextGun.item
-    else
-     cycle.reloadGuns = listGuns(shooterFighter)
-     cycle.reloadPos = 1
-     cycle.reloadDone = {}
-     cycle.reloadWaitStart = {}
-     cycle.phase = "reload"
+  setStatus("killing: " .. (targetPlayer and targetPlayer.Name or tostring(targetModel)), Color3.fromRGB(255, 100, 100))
+
+  root.CFrame = CFrame.new(head.Position + offsetVec)
+  faceAt(head.Position, cam)
+
+  if shooterFighter then
+   if not isProtected(targetPlayer, targetModel, targetFighter) then
+    resetWeaponGates(shooterFighter)
+    for _ = 1, BULLETS_PER_FRAME do
+     shooterFighter:Input("StartShooting")
     end
-    task.wait(0.05)
-    continue
    end
-
-   if isGun(equipped) then
-    if equipped:IsEquipping() then
-     task.wait(POLL_INTERVAL)
-     continue
-    end
-
-    local ammo = ammoOf(equipped)
-    if ammo > 0 then
-     if tick() >= nextFire then
-      setStatus("killing: " .. (targetPlayer and targetPlayer.Name or tostring(targetModel)), Color3.fromRGB(255, 100, 100))
-      resetShootGates(shooterFighter)
-      for _ = 1, BULLETS_PER_FRAME do
-       shooterFighter:Input("StartShooting")
-      end
-      nextFire = tick() + FIRE_INTERVAL
-     end
-     RunService.PreRender:Wait()
-     continue
-    else
-     local nextGun = findNextFiringGun(shooterFighter, equipped)
-     if nextGun and nextGun.item ~= equipped then
-      setStatus("switching: " .. (nextGun.item.Name or "gun"), Color3.fromRGB(200, 200, 255))
-      shooterFighter:EquipItem(nextGun.index)
-      cycle.phase = "switch-wait"
-      cycle.switchTargetItem = nextGun.item
-      task.wait(0.05)
-      continue
-     else
-      setStatus("reloading all", Color3.fromRGB(255, 180, 255))
-      cycle.reloadGuns = listGuns(shooterFighter)
-      cycle.reloadPos = 1
-      cycle.reloadDone = {}
-      cycle.reloadWaitStart = {}
-      cycle.phase = "reload"
-      task.wait(0.05)
-      continue
-     end
-    end
-   else
-    local nextGun = findNextFiringGun(shooterFighter, equipped)
-    if nextGun then
-     shooterFighter:EquipItem(nextGun.index)
-     cycle.phase = "switch-wait"
-     cycle.switchTargetItem = nextGun.item
-    else
-     cycle.reloadGuns = listGuns(shooterFighter)
-     cycle.reloadPos = 1
-     cycle.reloadDone = {}
-     cycle.reloadWaitStart = {}
-     cycle.phase = "reload"
-    end
-    task.wait(0.05)
-    continue
-   end
-  elseif cycle.phase == "switch-wait" then
-   local it = cycle.switchTargetItem
-   if not it or it.Parent == nil then
-    cycle.phase = "fire"
-    continue
-   end
-   if shooterFighter.EquippedItem == it and not it:IsEquipping() then
-    cycle.phase = "fire"
-    cycle.switchTargetItem = nil
-   else
-    task.wait(0.05)
-   end
-   continue
-  elseif cycle.phase == "reload" then
-   local guns = cycle.reloadGuns
-   if not guns or cycle.reloadPos > #guns then
-    cycle.phase = "fire"
-    continue
-   end
-
-   local g = guns[cycle.reloadPos]
-   local item = g.item
-   local idx = g.index
-   local now = tick()
-
-   -- already done this pass
-   if cycle.reloadDone[idx] then
-    cycle.reloadPos = cycle.reloadPos + 1
-    continue
-   end
-
-   -- ammo already full, or no reserve
-   local ammo = ammoOf(item)
-   local reserve = reserveOf(item)
-   if ammo > 0 or reserve <= 0 then
-    cycle.reloadDone[idx] = true
-    cycle.reloadPos = cycle.reloadPos + 1
-    continue
-   end
-
-   -- already being reloaded by the gun's own _CheckReload thread
-   if isReloadingByGun(item) then
-    if not cycle.reloadWaitStart[idx] then
-     cycle.reloadWaitStart[idx] = now
-    end
-    if ammoOf(item) > 0 then
-     cycle.reloadDone[idx] = true
-     cycle.reloadPos = cycle.reloadPos + 1
-    elseif now - cycle.reloadWaitStart[idx] > RELOAD_WAIT_TIMEOUT then
-     cycle.reloadDone[idx] = true
-     cycle.reloadPos = cycle.reloadPos + 1
-    else
-     task.wait(POLL_INTERVAL)
-    end
-    continue
-   end
-
-   -- ensure this gun is equipped
-   if shooterFighter.EquippedItem ~= item then
-    setStatus("equipping for reload: " .. tostring(item.Name or idx), Color3.fromRGB(255, 180, 255))
-    shooterFighter:EquipItem(idx)
-    local t0 = now
-    while shooterFighter.EquippedItem ~= item and tick() - t0 < EQUIP_WAIT_TIMEOUT do
-     task.wait(POLL_INTERVAL)
-    end
-    if shooterFighter.EquippedItem ~= item then
-     cycle.reloadDone[idx] = true
-     cycle.reloadPos = cycle.reloadPos + 1
-    end
-    continue
-   end
-
-   if item:IsEquipping() then
-    task.wait(POLL_INTERVAL)
-    continue
-   end
-
-   -- issue reload ONCE; do NOT reset reload cooldown, gun's own check will pass because it's empty
-   if type(item.StartReloading) == "function" then
-    -- make sure the call is accepted: only clear the minimum gate
-    item._reload_cooldown = 0
-    item._reload_cancel_cooldown = 0
-    item._reload_cancel_expiration = 0
-    item:Input("StartReloading")
-    cycle.reloadWaitStart[idx] = tick()
-   else
-    cycle.reloadDone[idx] = true
-    cycle.reloadPos = cycle.reloadPos + 1
-   end
-   continue
   end
 
-  task.wait(POLL_INTERVAL)
+  nextFire = now + FIRE_INTERVAL
+  protectionDirty = false
+
+  local waitTime = nextFire - tick()
+  if waitTime > 0 then
+   task.wait(waitTime)
+  else
+   RunService.PreRender:Wait()
+  end
  end
 
  if targetFighter then
