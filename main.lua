@@ -1,8 +1,9 @@
 --[[
   Rage  •  zero  — fixed build
-  Fixes: FPS stall from oversampled task.wait + remote flood
-  Adds: rapid-fire slider (0.5x – 10x)
-  Restores: custom forcefield + Roblox ForceField detection (optimized)
+  - Unified nearest-target pick (players + NPCs share one bestDist)
+  - Humanoid mode restored to full workspace scan (throttled)
+  - Custom + Roblox ForceField detection restored (cached, no lag)
+  - Rapid-fire slider (0.5x – 10x), fire rate capped to frame budget
 ]]
 
 local Players = game:GetService("Players")
@@ -344,10 +345,8 @@ local function fighterIsInvincible(fighter)
     return false
 end
 
--- ── Optimized forcefield detection ────────────────
--- Full descendant scan is *cached* and only invalidated when the character
--- actually changes. Normal check cost is O(1).
-local ffCache = {}   -- [character] = { dirty = bool, value = bool }
+-- ── Optimized forcefield detection (cached) ──────
+local ffCache = {}
 
 local function bindFFCache(character)
     if ffCache[character] then return end
@@ -375,7 +374,6 @@ local function scanCharacterForFF(character)
     if character:FindFirstChildOfClass("ForceField") then
         found = true
     else
-        -- only walk descendants when cache is dirty; break early on hit
         for _, inst in ipairs(character:GetDescendants()) do
             if inst:IsA("ForceField") then
                 found = true
@@ -436,9 +434,9 @@ local function hasAttributeForcefield(player, character)
     return false
 end
 
--- ── Fighter invincibility signal (no per-frame polling) ──
+-- ── Fighter invincibility signal (cached) ───────
 local invConnections = {}
-local invDirtyFlag = {}  -- [fighter] = { dirty = bool }
+local invDirtyFlag = {}
 
 local function subscribeInvincibility(fighter)
     if not fighter or invConnections[fighter] then return end
@@ -448,29 +446,20 @@ local function subscribeInvincibility(fighter)
 
     local ok, sig = pcall(function() return fighter:GetDataChangedSignal("Invincibility") end)
     if ok and sig then
-        table.insert(invConnections[fighter], sig:Connect(function()
-            flag.dirty = true
-        end))
+        table.insert(invConnections[fighter], sig:Connect(function() flag.dirty = true end))
     end
 
     local ok2, sig2 = pcall(function() return fighter.InvincibilityChanged end)
     if ok2 and sig2 and sig2.Connect then
-        table.insert(invConnections[fighter], sig2:Connect(function()
-            flag.dirty = true
-        end))
+        table.insert(invConnections[fighter], sig2:Connect(function() flag.dirty = true end))
     end
 end
 
 local function fighterIsInvincibleCached(fighter)
     if not fighter then return false end
     local flag = invDirtyFlag[fighter]
-    if not flag then
-        -- not subscribed: fall back to live check once
-        return fighterIsInvincible(fighter)
-    end
-    if not flag.dirty then
-        return flag.value == true
-    end
+    if not flag then return fighterIsInvincible(fighter) end
+    if not flag.dirty then return flag.value == true end
     local v = fighterIsInvincible(fighter)
     flag.dirty = false
     flag.value = v
@@ -540,21 +529,25 @@ local function isEnemy(player, model)
     return t ~= LOCAL_TEAM
 end
 
--- ── Target picking ───────────────────────────────
-local function pickNearestPlayer()
+-- ── Target picking (unified nearest) ─────────────
+local function pickNearest()
     local lr = localRoot()
     if not lr then return nil end
-    local best, bestDist = nil, math.huge
     local myChar = localChar()
+    local lrPos  = lr.Position
+
+    local best, bestDist = nil, math.huge
+
+    -- 1) players
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP then
             local char = plr.Character
             if char and char ~= myChar then
                 local hum  = char:FindFirstChildOfClass("Humanoid")
                 local head = char:FindFirstChild("Head")
-                local root = char:FindFirstChild("HumanoidRootPart")
+                local root = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
                 if hum and hum.Health > 0 and head and root and isEnemy(plr, char) then
-                    local d = (root.Position - lr.Position).Magnitude
+                    local d = (root.Position - lrPos).Magnitude
                     if d < bestDist then
                         best, bestDist = {
                             Humanoid = hum, Model = char, Head = head,
@@ -565,30 +558,34 @@ local function pickNearestPlayer()
             end
         end
     end
-    if not best and State.Mode ~= "Player Only" then
-        for _, model in ipairs(Workspace:GetChildren()) do
-            if model ~= myChar and model:IsA("Model") then
-                local hum  = model:FindFirstChildOfClass("Humanoid")
-                local head = model:FindFirstChild("Head")
-                local root = model:FindFirstChild("HumanoidRootPart")
-                if hum and hum.Health > 0 and head and root
-                    and not Players:GetPlayerFromCharacter(model) then
-                    local d = (root.Position - lr.Position).Magnitude
-                    if d < bestDist and isEnemy(nil, model) then
-                        best, bestDist = {
-                            Humanoid = hum, Model = model, Head = head,
-                            Root = root, Player = nil,
-                        }, d
+
+    -- 2) NPCs (Humanoid mode only), same bestDist
+    if State.Mode ~= "Player Only" then
+        for _, inst in ipairs(Workspace:GetDescendants()) do
+            if inst:IsA("Humanoid") and inst.Health > 0 then
+                local model = inst.Parent
+                if model and model ~= myChar and not Players:GetPlayerFromCharacter(model) then
+                    local head = model:FindFirstChild("Head")
+                    local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+                    if head and root and isEnemy(nil, model) then
+                        local d = (root.Position - lrPos).Magnitude
+                        if d < bestDist then
+                            best, bestDist = {
+                                Humanoid = inst, Model = model, Head = head,
+                                Root = root, Player = nil,
+                            }, d
+                        end
                     end
                 end
             end
         end
     end
+
     return best
 end
 
 local function findTarget()
-    return pickNearestPlayer()
+    return pickNearest()
 end
 
 -- Camera aim (only writes when direction changes meaningfully)
@@ -860,4 +857,4 @@ RunService.Heartbeat:Connect(function()
 end)
 
 setStatus("loaded — arm Rage", Color3.fromRGB(140, 200, 140))
-print("[RageAimbot] fixed build loaded — slider present, FF checks restored & cached")
+print("[RageAimbot] fixed build loaded — unified nearest, FF cached, slider present")
