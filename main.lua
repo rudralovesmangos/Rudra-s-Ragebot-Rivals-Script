@@ -89,7 +89,7 @@ local BarLabel = Instance.new("TextLabel")
 BarLabel.Size = UDim2.new(1, -10, 1, 0)
 BarLabel.Position = UDim2.new(0, 8, 0, 0)
 BarLabel.BackgroundTransparency = 1
-BarLabel.Text = "Rage  •  zero"
+BarLabel.Text = "Rudra's Ragebot"
 BarLabel.Font = Enum.Font.GothamBold
 BarLabel.TextSize = 13
 BarLabel.TextColor3 = Color3.fromRGB(230, 230, 240)
@@ -857,4 +857,4 @@ RunService.Heartbeat:Connect(function()
 end)
 
 setStatus("loaded — arm Rage", Color3.fromRGB(140, 200, 140))
-print("[RageAimbot] fixed build loaded — unified nearest, FF cached, slider present")
+print("[RageAimbot] fixed build loaded — title changed to Rudra's Ragebot")
