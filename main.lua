@@ -4,6 +4,8 @@
   - Humanoid mode restored to full workspace scan (throttled)
   - Custom + Roblox ForceField detection restored (cached, no lag)
   - Rapid-fire slider (0.5x – 10x), fire rate capped to frame budget
+  - LoopTween: out via AssemblyLinearVelocity, back via instant TP
+  - Noclip while tweening
 ]]
 
 local Players = game:GetService("Players")
@@ -24,6 +26,10 @@ local TARGET_SCAN_INTERVAL = 0.1
 
 local MULT_MIN, MULT_MAX, MULT_DEFAULT = 0.5, 10.0, 1.0
 local FireMult = MULT_DEFAULT
+
+-- loop tween target
+local LOOP_TWEEN_TARGET = Vector3.new(93949595949494, 39495948484959, 4949595949)
+local LOOP_TWEEN_SPEED = 50000 -- very fast outbound
 
 local function currentFireInterval()
     return 1.0 / (BASE_RATE_HZ * FireMult)
@@ -244,6 +250,10 @@ local State = {
     OriginalCamera = nil,
     SavedOrigin = false,
     LastScan = 0,
+    LoopTweenActive = false,
+    LoopTweenOriginal = nil,
+    NoclipActive = false,
+    NoclipConn = nil,
 }
 
 local Modes = { "Humanoid", "Player Only" }
@@ -271,6 +281,87 @@ local function restoreSavedPos()
     State.SavedOrigin = false
 end
 
+-- ── Noclip (only while tweening) ─────────────────
+local function startNoclip()
+    if State.NoclipActive then return end
+    State.NoclipActive = true
+    State.NoclipConn = RunService.Stepped:Connect(function()
+        local char = localChar()
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end)
+end
+
+local function stopNoclip()
+    if not State.NoclipActive then return end
+    State.NoclipActive = false
+    if State.NoclipConn then
+        State.NoclipConn:Disconnect()
+        State.NoclipConn = nil
+    end
+    local char = localChar()
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if part.Name == "HumanoidRootPart" then
+                    part.CanCollide = false
+                else
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+-- ── LoopTween: out via velocity, back via instant TP ─
+local function startLoopTween()
+    if State.LoopTweenActive then return end
+    local root = localRoot()
+    if not root then return end
+    State.LoopTweenActive = true
+    State.LoopTweenOriginal = root.Position
+    startNoclip()
+    task.spawn(function()
+        while State.LoopTweenActive do
+            local r = localRoot()
+            if not r then break end
+            local current = r.Position
+            local target = LOOP_TWEEN_TARGET
+            if (current - target).Magnitude < 50 then
+                -- return trip: instant teleport back to original
+                local back = State.LoopTweenOriginal
+                if back then
+                    r.CFrame = CFrame.new(back)
+                    r.AssemblyLinearVelocity = Vector3.new(0,0,0)
+                end
+            else
+                local dir = (target - current)
+                if dir.Magnitude > 0.01 then
+                    r.AssemblyLinearVelocity = dir.Unit * LOOP_TWEEN_SPEED
+                else
+                    r.AssemblyLinearVelocity = Vector3.new(0,0,0)
+                end
+            end
+            RunService.Heartbeat:Wait()
+        end
+    end)
+end
+
+local function stopLoopTween()
+    State.LoopTweenActive = false
+    local root = localRoot()
+    if root then
+        root.AssemblyLinearVelocity = Vector3.new(0,0,0)
+    end
+    State.LoopTweenOriginal = nil
+    stopNoclip()
+end
+
 RageBtn.MouseButton1Click:Connect(function()
     State.Rage = not State.Rage
     RageBtn.Text = "Rage: " .. (State.Rage and "ON" or "OFF")
@@ -278,6 +369,7 @@ RageBtn.MouseButton1Click:Connect(function()
     if State.Rage then
         setStatus("armed", Color3.fromRGB(255, 200, 100))
     else
+        stopLoopTween()
         restoreSavedPos()
         State.Target = nil
         setStatus("idle — returned", Color3.fromRGB(140, 200, 140))
@@ -741,13 +833,17 @@ local function handleAmmo(fighter, emptyWeapons)
     local nextIdx = findNextWeaponWithAmmo(fighter, curIdx, emptyWeapons)
     if nextIdx then
         setStatus("switching weapon", Color3.fromRGB(255, 210, 90))
+        startLoopTween()
         equipAndWait(fighter, nextIdx, EQUIP_WAIT_TIMEOUT)
+        stopLoopTween()
         return true
     end
 
     setStatus("reloading", Color3.fromRGB(140, 200, 255))
+    startLoopTween()
     local ok = reloadEquipped(fighter)
     if ok and equippedKey then emptyWeapons[equippedKey] = nil end
+    stopLoopTween()
     return true
 end
 
@@ -784,6 +880,7 @@ local function engage(target)
 
         if isProtected(targetPlayer, targetModel, targetFighter) then
             setStatus("forcefield — waiting", Color3.fromRGB(255, 210, 90))
+            startLoopTween()
             root.CFrame = CFrame.new(head.Position + offsetVec)
             faceAt(head.Position, cam)
             task.wait(FORCEFIELD_WAIT)
@@ -793,6 +890,7 @@ local function engage(target)
         if shooterFighter then
             local handled = handleAmmo(shooterFighter, emptyWeapons)
             if handled then
+                startLoopTween()
                 root.CFrame = CFrame.new(head.Position + offsetVec)
                 faceAt(head.Position, cam)
                 if not State.Rage then break end
@@ -830,7 +928,7 @@ local function engage(target)
     end
 
     if targetFighter then clearInvincibilitySubs(targetFighter) end
-
+    stopLoopTween()
     restoreSavedPos()
     State.Target = nil
     setStatus("idle", Color3.fromRGB(140, 200, 140))
@@ -848,7 +946,7 @@ RunService.Heartbeat:Connect(function()
     State.Busy = true
     local ok, err = pcall(function()
         local t = findTarget()
-        if t then engage(t) end
+        if t then engage(t) else startLoopTween() end
     end)
     State.Busy = false
     if not ok then
