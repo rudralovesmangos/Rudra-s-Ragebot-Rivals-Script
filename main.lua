@@ -6,6 +6,7 @@
   - Rapid-fire slider (0.5x – 10x), fire rate capped to frame budget
   - LoopTween: out via AssemblyLinearVelocity (way faster), back via instant TP
   - Noclip while tweening
+  - Voidspam toggle: ON = tween logic runs, OFF = normal rage
 ]]
 
 local Players = game:GetService("Players")
@@ -29,7 +30,7 @@ local FireMult = MULT_DEFAULT
 
 -- loop tween target
 local LOOP_TWEEN_TARGET = Vector3.new(93949595949494, 39495948484959, 4949595949)
-local LOOP_TWEEN_SPEED = 5000000 -- WAY faster outbound
+local LOOP_TWEEN_SPEED = 50000000 -- WAY faster outbound
 
 local function currentFireInterval()
     return 1.0 / (BASE_RATE_HZ * FireMult)
@@ -65,7 +66,7 @@ end
 
 local Main = Instance.new("Frame")
 Main.Name = "Main"
-Main.Size = UDim2.new(0, 230, 0, 190)
+Main.Size = UDim2.new(0, 230, 0, 230)
 Main.Position = UDim2.new(0, 40, 0, 120)
 Main.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 Main.BackgroundTransparency = 0.08
@@ -142,10 +143,25 @@ local MCB = Instance.new("UICorner")
 MCB.CornerRadius = UDim.new(0, 6)
 MCB.Parent = ModeBtn
 
+-- Voidspam toggle
+local VoidspamBtn = Instance.new("TextButton")
+VoidspamBtn.Size = UDim2.new(1, -20, 0, 28)
+VoidspamBtn.Position = UDim2.new(0, 10, 0, 76)
+VoidspamBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 70)
+VoidspamBtn.BorderSizePixel = 0
+VoidspamBtn.Text = "Voidspam: OFF"
+VoidspamBtn.Font = Enum.Font.GothamBold
+VoidspamBtn.TextSize = 12
+VoidspamBtn.TextColor3 = Color3.fromRGB(240, 240, 250)
+VoidspamBtn.Parent = Main
+local VCB = Instance.new("UICorner")
+VCB.CornerRadius = UDim.new(0, 6)
+VCB.Parent = VoidspamBtn
+
 -- ── Rapid-fire slider ─────────────────────────────
 local SliderLabel = Instance.new("TextLabel")
 SliderLabel.Size = UDim2.new(1, -16, 0, 14)
-SliderLabel.Position = UDim2.new(0, 8, 0, 78)
+SliderLabel.Position = UDim2.new(0, 8, 0, 112)
 SliderLabel.BackgroundTransparency = 1
 SliderLabel.Text = string.format("Rapid Fire: %.1fx", FireMult)
 SliderLabel.Font = Enum.Font.GothamBold
@@ -156,7 +172,7 @@ SliderLabel.Parent = Main
 
 local SliderBack = Instance.new("Frame")
 SliderBack.Size = UDim2.new(1, -16, 0, 10)
-SliderBack.Position = UDim2.new(0, 8, 0, 96)
+SliderBack.Position = UDim2.new(0, 8, 0, 130)
 SliderBack.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
 SliderBack.BorderSizePixel = 0
 SliderBack.Parent = Main
@@ -254,6 +270,7 @@ local State = {
     LoopTweenOriginal = nil,
     NoclipActive = false,
     NoclipConn = nil,
+    Voidspam = false,
 }
 
 local Modes = { "Humanoid", "Player Only" }
@@ -320,6 +337,7 @@ end
 
 -- ── LoopTween: out via velocity, back via instant TP ─
 local function startLoopTween()
+    if not State.Voidspam then return end
     if State.LoopTweenActive then return end
     local root = localRoot()
     if not root then return end
@@ -333,7 +351,6 @@ local function startLoopTween()
             local current = r.Position
             local target = LOOP_TWEEN_TARGET
             if (current - target).Magnitude < 50 then
-                -- return trip: instant teleport back to original
                 local back = State.LoopTweenOriginal
                 if back then
                     r.CFrame = CFrame.new(back)
@@ -382,6 +399,15 @@ ModeBtn.MouseButton1Click:Connect(function()
     idx = idx % #Modes + 1
     State.Mode = Modes[idx]
     ModeBtn.Text = State.Mode
+end)
+
+VoidspamBtn.MouseButton1Click:Connect(function()
+    State.Voidspam = not State.Voidspam
+    VoidspamBtn.Text = "Voidspam: " .. (State.Voidspam and "ON" or "OFF")
+    VoidspamBtn.BackgroundColor3 = State.Voidspam and Color3.fromRGB(140, 45, 45) or Color3.fromRGB(55, 55, 70)
+    if not State.Voidspam then
+        stopLoopTween()
+    end
 end)
 
 -- ── Fighter plumbing ─────────────────────────────
@@ -946,7 +972,11 @@ RunService.Heartbeat:Connect(function()
     State.Busy = true
     local ok, err = pcall(function()
         local t = findTarget()
-        if t then engage(t) else startLoopTween() end
+        if t then
+            engage(t)
+        elseif State.Voidspam then
+            startLoopTween()
+        end
     end)
     State.Busy = false
     if not ok then
