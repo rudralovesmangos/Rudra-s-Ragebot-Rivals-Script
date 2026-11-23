@@ -4,7 +4,7 @@
   - Humanoid mode restored to full workspace scan (throttled)
   - Custom + Roblox ForceField detection restored (cached, no lag)
   - Rapid-fire slider (0.5x – 10x), fire rate capped to frame budget
-  - LoopTween: out via AssemblyLinearVelocity, back via instant TP
+  - LoopTween: out via AssemblyLinearVelocity (way faster), back via instant TP
   - Noclip while tweening
 ]]
 
@@ -29,7 +29,7 @@ local FireMult = MULT_DEFAULT
 
 -- loop tween target
 local LOOP_TWEEN_TARGET = Vector3.new(93949595949494, 39495948484959, 4949595949)
-local LOOP_TWEEN_SPEED = 50000 -- very fast outbound
+local LOOP_TWEEN_SPEED = 5000000 -- WAY faster outbound
 
 local function currentFireInterval()
     return 1.0 / (BASE_RATE_HZ * FireMult)
