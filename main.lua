@@ -1,12 +1,8 @@
 --[[
-  Rage  •  zero  — fixed build
-  - Unified nearest-target pick (players + NPCs share one bestDist)
-  - Humanoid mode restored to full workspace scan (throttled)
-  - Custom + Roblox ForceField detection restored (cached, no lag)
-  - Rapid-fire slider (0.5x – 10x), fire rate capped to frame budget
-  - LoopTween: out via AssemblyLinearVelocity (way faster), back via instant TP
-  - Noclip while tweening
-  - Voidspam toggle: ON = tween logic runs, OFF = normal rage
+  Rage  •  zero  — boosted rapid-fire build
+  - Rapid-fire slider (0.5x – 100x)
+  - Very large bullets-per-frame at high multipliers
+  - Removed 60 Hz hard cap (kept a 1 ms floor so the loop yields)
 ]]
 
 local Players = game:GetService("Players")
@@ -25,24 +21,32 @@ local RELOAD_WAIT_TIMEOUT = 5
 local EQUIP_WAIT_TIMEOUT  = 1
 local TARGET_SCAN_INTERVAL = 0.1
 
-local MULT_MIN, MULT_MAX, MULT_DEFAULT = 0.5, 10.0, 1.0
+-- boosted multiplier range
+local MULT_MIN, MULT_MAX, MULT_DEFAULT = 0.5, 100.0, 1.0
 local FireMult = MULT_DEFAULT
 
 -- loop tween target
 local LOOP_TWEEN_TARGET = Vector3.new(93949595949494, 39495948484959, 4949595949)
-local LOOP_TWEEN_SPEED = 50000000 -- WAY faster outbound
+local LOOP_TWEEN_SPEED = 50000000
 
 local function currentFireInterval()
-    return 1.0 / (BASE_RATE_HZ * FireMult)
+    local iv = 1.0 / (BASE_RATE_HZ * FireMult)
+    if iv < 0.001 then iv = 0.001 end
+    return iv
 end
 
 local function currentBulletsPerFrame()
-    if FireMult >= 6.0 then return 3 end
-    if FireMult >= 3.0 then return 2 end
+    local m = FireMult
+    if m >= 50.0 then return 20 end
+    if m >= 25.0 then return 12 end
+    if m >= 15.0 then return 8 end
+    if m >= 10.0 then return 6 end
+    if m >= 6.0  then return 3 end
+    if m >= 3.0  then return 2 end
     return 1
 end
 
--- ── GUI ─────────────────────────────────────────────
+-- GUI parent
 local function getGuiParent()
     local ok, hui = pcall(function() return gethui and gethui() end)
     if ok and hui then return hui end
@@ -143,7 +147,6 @@ local MCB = Instance.new("UICorner")
 MCB.CornerRadius = UDim.new(0, 6)
 MCB.Parent = ModeBtn
 
--- Voidspam toggle
 local VoidspamBtn = Instance.new("TextButton")
 VoidspamBtn.Size = UDim2.new(1, -20, 0, 28)
 VoidspamBtn.Position = UDim2.new(0, 10, 0, 76)
@@ -158,7 +161,6 @@ local VCB = Instance.new("UICorner")
 VCB.CornerRadius = UDim.new(0, 6)
 VCB.Parent = VoidspamBtn
 
--- ── Rapid-fire slider ─────────────────────────────
 local SliderLabel = Instance.new("TextLabel")
 SliderLabel.Size = UDim2.new(1, -16, 0, 14)
 SliderLabel.Position = UDim2.new(0, 8, 0, 112)
@@ -236,7 +238,7 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
--- ── Drag ──────────────────────────────────────────
+-- Drag
 do
     local dragging, dragStart, startPos
     Bar.InputBegan:Connect(function(input)
@@ -298,7 +300,7 @@ local function restoreSavedPos()
     State.SavedOrigin = false
 end
 
--- ── Noclip (only while tweening) ─────────────────
+-- Noclip
 local function startNoclip()
     if State.NoclipActive then return end
     State.NoclipActive = true
@@ -335,7 +337,7 @@ local function stopNoclip()
     end
 end
 
--- ── LoopTween: out via velocity, back via instant TP ─
+-- LoopTween
 local function startLoopTween()
     if not State.Voidspam then return end
     if State.LoopTweenActive then return end
@@ -410,7 +412,7 @@ VoidspamBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ── Fighter plumbing ─────────────────────────────
+-- Fighter plumbing
 local FighterController = nil
 do
     local ok, mod = pcall(function()
@@ -463,7 +465,7 @@ local function fighterIsInvincible(fighter)
     return false
 end
 
--- ── Optimized forcefield detection (cached) ──────
+-- Forcefield detection (cached)
 local ffCache = {}
 
 local function bindFFCache(character)
@@ -552,7 +554,7 @@ local function hasAttributeForcefield(player, character)
     return false
 end
 
--- ── Fighter invincibility signal (cached) ───────
+-- Invincibility signal cache
 local invConnections = {}
 local invDirtyFlag = {}
 
@@ -604,7 +606,7 @@ local function isProtected(player, character, fighter)
     return false
 end
 
--- ── Team plumbing ────────────────────────────────
+-- Team plumbing
 local LOCAL_TEAM
 local function refreshLocalTeam()
     LOCAL_TEAM = nil
@@ -647,7 +649,7 @@ local function isEnemy(player, model)
     return t ~= LOCAL_TEAM
 end
 
--- ── Target picking (unified nearest) ─────────────
+-- Unified nearest target
 local function pickNearest()
     local lr = localRoot()
     if not lr then return nil end
@@ -656,7 +658,6 @@ local function pickNearest()
 
     local best, bestDist = nil, math.huge
 
-    -- 1) players
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP then
             local char = plr.Character
@@ -677,7 +678,6 @@ local function pickNearest()
         end
     end
 
-    -- 2) NPCs (Humanoid mode only), same bestDist
     if State.Mode ~= "Player Only" then
         for _, inst in ipairs(Workspace:GetDescendants()) do
             if inst:IsA("Humanoid") and inst.Health > 0 then
@@ -706,7 +706,6 @@ local function findTarget()
     return pickNearest()
 end
 
--- Camera aim (only writes when direction changes meaningfully)
 local function faceAt(pos, cam)
     cam = cam or Workspace.CurrentCamera
     if not cam then return end
@@ -873,7 +872,7 @@ local function handleAmmo(fighter, emptyWeapons)
     return true
 end
 
--- ── Engage loop ──────────────────────────────────
+-- Engage loop
 local function engage(target)
     local hum  = localHum()
     local root = localRoot()
@@ -947,7 +946,6 @@ local function engage(target)
         end
 
         local interval = currentFireInterval()
-        if interval < 0.0166 then interval = 0.0166 end
         nextFire = now + interval
 
         task.wait(interval)
@@ -985,4 +983,4 @@ RunService.Heartbeat:Connect(function()
 end)
 
 setStatus("loaded — arm Rage", Color3.fromRGB(140, 200, 140))
-print("[RageAimbot] fixed build loaded — title changed to Rudra's Ragebot")
+print("[RageAimbot] boosted build loaded")
